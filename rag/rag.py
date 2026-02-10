@@ -3,12 +3,12 @@ import nest_asyncio
 from dotenv import load_dotenv
 from urllib.parse import urljoin, urlparse
 
-# Apply async patch for Playwright
+# Patch asyncio just in case, though we are fixing the root cause
 nest_asyncio.apply()
 load_dotenv()
 
 # IMPORTS
-from langchain_community.document_loaders import PlaywrightURLLoader
+from playwright.async_api import async_playwright
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -16,81 +16,91 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from playwright.sync_api import sync_playwright
+from langchain_core.documents import Document
 
 # --- CONFIGURATION ---
 os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
-TARGET_URL = os.getenv("TARGET_URL")
+TARGET_URL = os.getenv("TARGET_URL") 
 
 class ChatbotBrain:
     def __init__(self):
         self.vector_db = None
         self.chain = None
-        self.initialize()
+        # We DO NOT initialize here anymore. 
+        # We will call await brain.initialize() from main.py
 
-    def find_internal_links(self, start_url):
+    async def crawl_website(self, start_url):
         """
-        Uses Playwright to visit the homepage and find all sub-pages 
-        that belong to the same website.
+        Custom Async Crawler using Playwright.
+        Scrapes the homepage and all internal links found.
         """
-        print(f"🕷️  Crawler: Visiting {start_url} to find links...")
-        found_urls = {start_url} # Use a set to avoid duplicates
+        print(f"🕷️  Async Crawler: Starting at {start_url}...")
+        visited_urls = set()
+        documents = []
         
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(start_url, wait_until="networkidle") # Wait for React to load
-                
-                # Get all anchor tags
-                anchors = page.query_selector_all("a")
-                
-                for a in anchors:
-                    href = a.get_attribute("href")
-                    if href:
-                        # Convert relative paths (/about) to full URLs (https://.../about)
-                        full_url = urljoin(start_url, href)
-                        
-                        # Only keep links that stay on your domain (don't crawl Twitter/LinkedIn)
-                        if urlparse(full_url).netloc == urlparse(start_url).netloc:
-                            # Filter out junk like #section or mailto:
-                            if "#" not in full_url and "mailto:" not in full_url:
-                                found_urls.add(full_url)
-                
-                browser.close()
-        except Exception as e:
-            print(f"⚠️ Link discovery failed: {e}")
+        async with async_playwright() as p:
+            # Launch browser
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
             
-        print(f"🕷️  Crawler: Found {len(found_urls)} unique pages: {list(found_urls)}")
-        return list(found_urls)
+            # 1. SCRAPE HOMEPAGE & FIND LINKS
+            try:
+                await page.goto(start_url, wait_until="networkidle")
+                
+                # Get page content
+                content = await page.content()
+                documents.append(Document(page_content=content, metadata={"source": start_url}))
+                visited_urls.add(start_url)
+                
+                # Find all links
+                anchors = await page.query_selector_all("a")
+                for a in anchors:
+                    href = await a.get_attribute("href")
+                    if href:
+                        full_url = urljoin(start_url, href)
+                        # Filter for internal links only
+                        if urlparse(full_url).netloc == urlparse(start_url).netloc:
+                            if "#" not in full_url and full_url not in visited_urls:
+                                visited_urls.add(full_url)
+            except Exception as e:
+                print(f"⚠️ Error scraping {start_url}: {e}")
 
-    def initialize(self):
-        # 1. DISCOVER LINKS
-        # Instead of just loading TARGET_URL, we first find all its sub-pages
-        all_pages = self.find_internal_links(TARGET_URL)
+            # 2. SCRAPE DISCOVERED LINKS
+            print(f"🕷️  Found {len(visited_urls)} pages. Scraping them now...")
+            
+            for url in visited_urls:
+                if url == start_url: continue # Skip homepage (already done)
+                try:
+                    print(f"   scrapping: {url}")
+                    await page.goto(url, wait_until="networkidle", timeout=10000)
+                    content = await page.inner_text("body") # Better for RAG than raw HTML
+                    if content:
+                        documents.append(Document(page_content=content, metadata={"source": url}))
+                except Exception as e:
+                    print(f"   Failed to scrape {url}: {e}")
 
-        print(f"🧠 Brain: Scraping {len(all_pages)} pages...")
+            await browser.close()
+            
+        return documents
+
+    async def initialize(self):
+        print("🧠 Brain: Warming up...")
         
-        # 2. LOAD CONTENT (Using Playwright for all pages)
-        loader = PlaywrightURLLoader(
-            urls=all_pages,
-            remove_selectors=["header", "footer", "nav"], 
-            continue_on_failure=True
-        )
+        # 1. CRAWL (Async)
+        docs = await self.crawl_website(TARGET_URL)
         
-        try:
-            docs = loader.load()
-            print(f"   Successfully scraped content from {len(docs)} pages.")
-        except Exception as e:
-            print(f"⚠️ Error during scraping: {e}")
+        if not docs:
+            print("⚠️ Brain: No content found. Chatbot will be empty.")
             return
 
-        # 3. SPLIT
+        print(f"🧠 Brain: Processing {len(docs)} pages into knowledge...")
+
+        # 2. SPLIT
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = splitter.split_documents(docs)
         
-        # 4. EMBED
-        print("   Loading embeddings...")
+        # 3. EMBED
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         
         self.vector_db = Chroma.from_documents(
@@ -99,20 +109,20 @@ class ChatbotBrain:
             collection_name="godata_knowledge"
         )
         
-        # 5. LLM
+        # 4. LLM
         llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             temperature=0
         )
 
-        # 6. PROMPT
+        # 5. CHAIN
         template = """You are a helpful support specialist for GoData.
         
         INSTRUCTIONS:
         1. **GoData Questions:** If the user asks about GoData, products, or features, you MUST use the "Context" below. Do not make up facts about the company.
         2. **General Software Questions:** If the user asks about general tech concepts (e.g., "What is an API?", "Explain React", "What is RAG?"), you may use your own general knowledge to answer, even if it's not in the Context.
         3. **Refusal:** If the question is completely unrelated to software or business (e.g., "What is the capital of France?", "How to cook pasta?"), politely refuse.
-        4. **Tone:** Always maintain a professional, concise, and helpful tone. Talk as a GoData member in first person. When answering general tech questions, try to relate them back to GoData if possible (e.g., "APIs are how different software talks to each other. GoData uses APIs to...").
+        4. **Tone:** Always maintain a professional, concise, natural and helpful tone. Talk as a GoData member in first person. When answering general tech questions, try to relate them back to GoData if possible (e.g., "APIs are how different software talks to each other. GoData uses APIs to..."). Try not to introduce yourslef always.
         
         TONE:
         - Professional, concise, and helpful.
@@ -123,8 +133,6 @@ class ChatbotBrain:
 
         Question: {question}
         """
-        
-        
         prompt = ChatPromptTemplate.from_template(template)
         retriever = self.vector_db.as_retriever()
 
@@ -135,18 +143,12 @@ class ChatbotBrain:
             | StrOutputParser()
         )
         
-        print("🧠 Brain: Ready and loaded with full site knowledge!")
+        print("🧠 Brain: ONLINE and Ready! 🚀")
 
-    def ask(self, query: str):
+    async def ask(self, query: str):
         if not self.chain:
-            return "System is initializing..."
-        return self.chain.invoke(query)
+            return "I am still waking up (Crawling site). Please try again in 10 seconds."
+        return  await self.chain.ainvoke(query)
 
+# Create the instance, but DO NOT initialize it yet
 brain = ChatbotBrain()
-
-if __name__ == "__main__":
-    # Simple test
-    question = "What is GoData?"
-    print(f"❓ Question: {question}")
-    answer = brain.ask(question)
-    print(f"💡 Answer: {answer}")

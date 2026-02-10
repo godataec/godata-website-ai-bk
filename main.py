@@ -1,41 +1,54 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from rag.rag import brain # <--- This imports the 'brain' variable from your rag.py
+from rag.rag import brain # Import the brain instance
 
-app = FastAPI()
+# --- LIFESPAN MANAGER (The Modern Way) ---
+# This single function handles both startup (before yield) and shutdown (after yield)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. STARTUP LOGIC
+    print("🚀 Server starting... Waking up the Brain...")
+    try:
+        # This calls the async crawler we wrote in rag.py
+        await brain.initialize()
+    except Exception as e:
+        print(f"❌ Critical Error during startup: {e}")
+    
+    yield # The application runs while this yields
+    
+    # 2. SHUTDOWN LOGIC (Optional)
+    print("🛑 Server shutting down...")
+
+# --- APP INITIALIZATION ---
+# We pass the lifespan manager here
+app = FastAPI(lifespan=lifespan)
 
 # --- CORS SETTINGS ---
-# This allows your React app (on port 8080 or 5173) to send data to Python (on port 8000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows all origins (good for development)
+    allow_origins=["*"], # Update this to your specific domains in production
     allow_credentials=True,
-    allow_methods=["*"], # Allows GET, POST, OPTIONS, etc.
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # --- DATA MODEL ---
-# This defines what the frontend sends: {"message": "Hello"}
 class ChatRequest(BaseModel):
     message: str
 
-# --- THE ENDPOINT ---
-# The frontend sends a POST request here
+# --- CHAT ENDPOINT ---
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
-        # 1. Ask the brain
-        answer = brain.ask(request.message)
-        
-        # 2. Return the answer as JSON
+        # The brain is already initialized by lifespan
+        answer = await brain.ask(request.message)
         return {"answer": answer}
-        
     except Exception as e:
         print(f"❌ API Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- OPTIONAL: ROOT CHECK ---
 @app.get("/")
 async def root():
     return {"status": "GoData Brain is Active 🧠"}
