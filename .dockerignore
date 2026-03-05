@@ -1,7 +1,12 @@
-# .dockerignore
-.git
-.gitignore
 .venv
-.env
+venv
+env
 __pycache__
-rag/__pycache__
+.git
+.env
+chroma_db
+node_modules
+*.pyc
+*.pyo
+*.pyd
+.db

@@ -1,20 +1,19 @@
-# Using the official Playwright image with Python support
+# 1. Use the official Microsoft image (it already has Playwright + Python)
 FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
 
-#Set the working directory in the container
+# 2. Set working directory
 WORKDIR /app
 
-# Copy the requirements file into the container
+# 3. Copy only requirements first to leverage Docker Cache
 COPY requirements.txt .
 
-# Install the required Python packages
+# 4. Install dependencies (This layer will be cached unless you change requirements.txt)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code into the container
+# 5. Copy the rest of the app (The .dockerignore makes this instant)
 COPY . .
 
-# Expose the port that the application will run on
+# 6. Final settings
 EXPOSE 8000
 
-# Command to start the server at main root
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]
