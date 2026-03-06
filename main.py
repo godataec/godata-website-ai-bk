@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from rag.rag import brain # Import the brain instance
 
@@ -35,8 +35,20 @@ app.add_middleware(
 )
 
 # --- DATA MODEL ---
+MAX_MESSAGE_LENGTH = 400
+
 class ChatRequest(BaseModel):
     message: str
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Message cannot be empty.")
+        if len(v) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"Message too long. Please keep it under {MAX_MESSAGE_LENGTH} characters.")
+        return v
 
 # --- CHAT ENDPOINT ---
 @app.post("/api/chat")
@@ -45,6 +57,8 @@ async def chat_endpoint(request: ChatRequest):
         # The brain is already initialized by lifespan
         answer = await brain.ask(request.message)
         return {"answer": answer}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         print(f"❌ API Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

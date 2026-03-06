@@ -116,10 +116,10 @@ class ChatbotBrain:
         
         # 4. LLM
         llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             temperature=0
         )
-        self.retriever=self.vector_db.as_retriever()
+        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 2})
 
         # 5. CHAIN
         system_prompt = f"""You are Carlos, a helpful AI Architect and support specialist for GoData.
@@ -150,9 +150,33 @@ class ChatbotBrain:
         
         print("🧠 Brain: ONLINE and Ready! 🚀")
 
+    # Keywords that signal a relevant request (GoData topics, booking intent, tech questions)
+    _RELEVANT_KEYWORDS = {
+        # English
+        "godata", "meeting", "book", "schedule", "appointment", "consult",
+        "data", "api", "software", "service", "product", "feature", "price",
+        "team", "available", "contact", "demo", "solution", "platform",
+        "integration", "automation", "report", "dashboard", "analytics",
+        "what", "how", "can", "do", "is", "are", "does", "help", "tell",
+        # Spanish
+        "godata", "reunión", "reunion", "reservar", "agendar", "cita",
+        "disponible", "servicio", "producto", "datos", "precio", "equipo",
+        "contacto", "qué", "que", "cómo", "como", "puedes", "puedo",
+        "hola", "ayuda", "información", "informacion",
+    }
+
+    def _is_relevant(self, query: str) -> bool:
+        words = set(query.lower().split())
+        return bool(words & self._RELEVANT_KEYWORDS)
+
     async def ask(self, query: str, thread_id: str = "default_session"):
         if not getattr(self, 'agent_executor', None):
             return "I am still waking up. Please try again in 10 seconds."
+        if not self._is_relevant(query):
+            return (
+                "I can only assist with questions about GoData, our services, "
+                "software topics, or booking a consultation. How can I help you with that?"
+            )
         now=datetime.now()
         current_time_context=f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M')}"
         # 1. Fetch RAG context manually
