@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,13 +9,16 @@ from rag.rag import brain # Import the brain instance
 # This single function handles both startup (before yield) and shutdown (after yield)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. STARTUP LOGIC
-    print("🚀 Server starting... Waking up the Brain...")
-    try:
-        # This calls the async crawler we wrote in rag.py
-        await brain.initialize()
-    except Exception as e:
-        print(f"❌ Critical Error during startup: {e}")
+    # 1. STARTUP LOGIC - run initialization in background so the server starts immediately
+    print("🚀 Server starting... Waking up the Brain in the background...")
+    
+    async def _init_brain():
+        try:
+            await brain.initialize()
+        except Exception as e:
+            print(f"❌ Critical Error during startup: {e}")
+
+    asyncio.create_task(_init_brain())
     
     yield # The application runs while this yields
     
@@ -34,6 +38,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- HEALTH CHECK (responds immediately so Azure knows the container is alive) ---
+@app.get("/")
+async def health_check():
+    ready = getattr(brain, 'agent_executor', None) is not None
+    return {"status": "ok", "brain_ready": ready}
+
 # --- DATA MODEL ---
 class ChatRequest(BaseModel):
     message: str
@@ -42,7 +52,8 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
-        # The brain is already initialized by lifespan
+        if not getattr(brain, 'agent_executor', None):
+            return {"answer": "I am still waking up. Please try again in a few seconds."}
         answer = await brain.ask(request.message)
         return {"answer": answer}
     except Exception as e:
