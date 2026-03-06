@@ -71,6 +71,6 @@ jobs:
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'godataec-ai-bk'
+          app-name: 'godata-bak-ai'
           slot-name: 'Production'
           
