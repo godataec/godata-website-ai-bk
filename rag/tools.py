@@ -61,10 +61,6 @@ def book_godata_meeting(user_name: str, user_email: str, company_name: str, date
                     "type": "required"
                 },
                 {
-                    "emailAddress": {"address": "david.franco@godata.com.ec", "name": "David Franco"},
-                    "type": "required"
-                },
-                {
                     "emailAddress": {"address": "juan.montiel@godata.com.ec", "name": "Juan Montiel"},
                     "type": "required"
                 }
@@ -79,7 +75,7 @@ def book_godata_meeting(user_name: str, user_email: str, company_name: str, date
         if response.status_code == 201:
             event = response.json()
             teams_link = event.get("onlineMeeting", {}).get("joinUrl", "Link generated but hidden.")
-            return f"Success! Meeting booked with Juan and David. Give the user this Teams link: {teams_link}."
+            return f"Success! Meeting booked with Juan. Give the user this Teams link: {teams_link}. Also give conscise Details of the meeting: {event.get('subject')} on {date} at {time}."
         else:
             return f"Failed to book meeting. Error: {response.text}"
             
@@ -110,7 +106,7 @@ def validate_email_format(email: str) -> str:
 @tool
 def check_team_availability(date: str, time: str) -> str:
     """
-    Checks if Juan and David are free at a specific date (YYYY-MM-DD) and time (HH:MM).
+    Checks if Juan is free at a specific date (YYYY-MM-DD) and time (HH:MM).
     Always call this before booking to avoid collisions.
     """
     try:
@@ -123,7 +119,7 @@ def check_team_availability(date: str, time: str) -> str:
         end_dt = start_dt + timedelta(minutes=30)
         
         payload = {
-            "schedules": ["juan.montiel@godata.com.ec", "david.franco@godata.com.ec"],
+            "schedules": ["juan.montiel@godata.com.ec"],
             "startTime": {"dateTime": start_time, "timeZone": "SA Pacific Standard Time"},
             "endTime": {"dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "SA Pacific Standard Time"},
             "availabilityViewInterval": 30
@@ -141,6 +137,6 @@ def check_team_availability(date: str, time: str) -> str:
             if schedule.get('availabilityView', '0') != '0':
                 return f"Conflict: {schedule.get('scheduleId')} is busy at that time. Suggest a different slot."
         
-        return "Success: Both Juan and David are free at this time."
+        return "Success: Juan is free at this time."
     except Exception as e:
         return f"Error checking availability: {str(e)}"
