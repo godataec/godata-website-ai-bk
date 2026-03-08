@@ -119,33 +119,27 @@ class ChatbotBrain:
             model="llama-3.1-8b-instant",
             temperature=0
         )
-        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 2})
+        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 4})
 
         # 5. CHAIN
-        system_prompt = f"""You are Carlos, a helpful AI Architect and support specialist for GoData.
-        
+        # 5. CHAIN
+        system_prompt = """You are Jose, an AI Architect and friendly support specialist for GoData.
         
         INSTRUCTIONS:
-        1. **GoData Questions:** If the user asks about GoData, products, or features, you MUST use the "Context" below. Do not make up facts about the company.
-        2. **General Software Questions:** If the user asks about general tech concepts (e.g., "What is an API?", "Explain React", "What is RAG?"), you may use your own general knowledge to answer, even if it's not in the Context.
-        3. **Refusal:** If the question is completely unrelated to software or business (e.g., "What is the capital of France?", "How to cook pasta?"), politely refuse.
-        4. **Tone:** Always maintain a professional, concise, natural and helpful tone. Talk as a GoData member in first person. When answering general tech questions, try to relate them back to GoData if possible (e.g., "APIs are how different software talks to each other. GoData uses APIs to..."). Try not to introduce yourself always.
-        5.**Booking Meetings:** If the user wants to book a meeting , need consultation , contact an specialist or talk to an expert, you MUST ask for their:
-           - Before booking, use the 'validate_email_format' tool to ensure the user's email is legitimate. If it fails, ask the user for a corrected email.
+        1. GoData Questions: Use the provided Context below to answer. Do not make up facts.
+        2. General Software Questions: Answer general tech concepts using your own knowledge. Relate them back to GoData's services if possible.
+        3. Refusal: Politely refuse questions completely unrelated to software, data, or business.
+        4. Natural Lead-In & Booking: If a user expresses general interest (e.g., "I want to know more"), briefly answer their question and naturally invite them to book a quick consultation. Do not interrogate them. Ask for their booking details conversationally, one or two at a time (e.g., "I'd love to set up a quick call to show you! What's your name and email?"). 
+           *You MUST eventually gather ALL 5 of these details to book:*
            - Name
            - Email
            - Company Name
            - Preferred Date (Convert to YYYY-MM-DD format)
            - Preferred Time (Convert to HH:MM 24-hour format. Assume Ecuador Time UTC-5).
-        5. Email Validation: Once you have the email, use the 'validate_email_format' tool. If it fails, ask the user for a corrected email before proceeding.
-        6. Collision Protocol: Once you have a valid Date and Time, you MUST call the 'check_team_availability' tool BEFORE booking. If there is a conflict, politely ask the user for a different time.
-        7. Final Booking: ONLY call the 'book_godata_meeting' tool if you have gathered all 5 pieces of information AND the availability check was successful. Do not guess missing info.
-        8. Tone: Maintain a professional, concise, and natural tone. Speak in the first person. Do not repeatedly introduce yourself in every message.
-        
-        CRITICAL INSTRUCTION: You MUST always respond in the exact same language the user uses. 
-        - If the user asks a question in Spanish, you MUST reply in natural, conversational Spanish. 
-        - If the user asks in English, reply in English.
-        - Never mix languages unless specifically asked.
+        5. Email Validation: Once you have the email, run the 'validate_email_format' tool. If it fails, gently ask the user for a corrected email.
+        6. Calendar Check: Once you have a valid Date and Time, you MUST run the 'check_team_availability' tool BEFORE booking.
+        7. Final Booking: ONLY run the 'book_godata_meeting' tool if you have gathered all 5 pieces of info AND the availability check was successful.
+        8. Tone: Professional, warm, and conversational. Speak in the first person ("I"). Act like a helpful consultant, not a robotic form.
         """
         self.memory=MemorySaver()
         self.agent_executor = create_agent(model=llm, tools=tools, system_prompt=system_prompt, checkpointer=self.memory)
@@ -174,26 +168,36 @@ class ChatbotBrain:
     async def ask(self, query: str, thread_id: str = "default_session"):
         if not getattr(self, 'agent_executor', None):
             return "I am still waking up. Please try again in 10 seconds."
+            
         if not self._is_relevant(query):
             return (
                 "I can only assist with questions about GoData, our services, "
                 "software topics, or booking a consultation. How can I help you with that?"
             )
-        now=datetime.now()
-        current_time_context=f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M')}"
+            
+        now = datetime.now()
+        current_time_context = f"Current Date and Time: {now.strftime('%A, %B %d, %Y %H:%M')}"
+        
         # 1. Fetch RAG context manually
         docs = await self.retriever.ainvoke(query)
         context_text = "\n\n".join([doc.page_content for doc in docs])
         
-        # 2. Inject context
-        augmented_query = f"Context from GoData docs:\n{context_text}\n\nUser Question: {query}\n\nCurrent date and time: {current_time_context}"
+        # 2. Inject context and the STRICT LANGUAGE RULE at the bottom
+        augmented_query = f"""{current_time_context}
         
-        # 3. Execute with thread_id for memory tracking
+        Context from GoData docs:
+        {context_text}
+
+        User Question: {query}
+
+        FINAL RULE: You MUST answer the above "User Question" in the EXACT SAME LANGUAGE that the question is written in. If the question is in English, your response MUST be in English. If it is in Spanish, answer in natural Spanish."""
+                
+                # 3. Execute with thread_id for memory tracking
         response = await self.agent_executor.ainvoke(
-            {"messages": [{"role": "user", "content": augmented_query}]},
-            config={"configurable": {"thread_id": thread_id}} # <--- Tells the AI which conversation this is
+                    {"messages": [{"role": "user", "content": augmented_query}]},
+                    config={"configurable": {"thread_id": thread_id}} 
         )
-        
+                
         return response["messages"][-1].content
 
 # Create the instance, but DO NOT initialize it yet
