@@ -13,7 +13,7 @@ from playwright.async_api import async_playwright
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from rag.tools import book_godata_meeting,validate_email_format,check_team_availability
 from langgraph.checkpoint.memory import MemorySaver
@@ -23,7 +23,7 @@ from langchain.agents import create_agent
 
 
 # --- CONFIGURATION ---
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
+os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 TARGET_URL = os.getenv("TARGET_URL") 
 
 class ChatbotBrain:
@@ -115,8 +115,8 @@ class ChatbotBrain:
         )
         
         # 4. LLM
-        llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+        llm = ChatOpenAI(
+            model="gpt-4o-mini",
             temperature=0
         )
         self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 4})
@@ -146,43 +146,24 @@ class ChatbotBrain:
         
         print("🧠 Brain: ONLINE and Ready! 🚀")
 
-    # Keywords that signal a relevant request (GoData topics, booking intent, tech questions)
-    _RELEVANT_KEYWORDS = {
-        # English
-        "godata", "meeting", "book", "schedule", "appointment", "consult",
-        "data", "api", "software", "service", "product", "feature", "price",
-        "team", "available", "contact", "demo", "solution", "platform",
-        "integration", "automation", "report", "dashboard", "analytics",
-        "what", "how", "can", "do", "is", "are", "does", "help", "tell",
-        # Spanish
-        "godata", "reunión", "reunion", "reservar", "agendar", "cita",
-        "disponible", "servicio", "producto", "datos", "precio", "equipo",
-        "contacto", "qué", "que", "cómo", "como", "puedes", "puedo",
-        "hola", "ayuda", "información", "informacion",
-    }
-
-    def _is_relevant(self, query: str) -> bool:
-        words = set(query.lower().split())
-        return bool(words & self._RELEVANT_KEYWORDS)
 
     async def ask(self, query: str, thread_id: str = "default_session"):
         if not getattr(self, 'agent_executor', None):
             return "I am still waking up. Please try again in 10 seconds."
             
-        if not self._is_relevant(query):
-            return (
-                "I can only assist with questions about GoData, our services, "
-                "software topics, or booking a consultation. How can I help you with that?"
-            )
-            
         now = datetime.now()
         current_time_context = f"Current Date and Time: {now.strftime('%A, %B %d, %Y %H:%M')}"
         
-        # 1. Fetch RAG context manually
-        docs = await self.retriever.ainvoke(query)
-        context_text = "\n\n".join([doc.page_content for doc in docs])
+        # --- THE TOKEN SAVER ---
+        # If the user just says "Hi", "Thanks", or a very short greeting, don't waste tokens searching the database.
+        if len(query.split()) <= 3:
+            context_text = "No specific website context needed for this short message."
+        else:
+            # Only run the heavy RAG search if they actually ask a real question
+            docs = await self.retriever.ainvoke(query)
+            context_text = "\n\n".join([doc.page_content for doc in docs])
+        # ------------------------
         
-        # 2. Inject context and the STRICT LANGUAGE RULE at the bottom
         augmented_query = f"""{current_time_context}
         
         Context from GoData docs:
@@ -191,13 +172,12 @@ class ChatbotBrain:
         User Question: {query}
 
         FINAL RULE: You MUST answer the above "User Question" in the EXACT SAME LANGUAGE that the question is written in. If the question is in English, your response MUST be in English. If it is in Spanish, answer in natural Spanish."""
-                
-                # 3. Execute with thread_id for memory tracking
+        
         response = await self.agent_executor.ainvoke(
-                    {"messages": [{"role": "user", "content": augmented_query}]},
-                    config={"configurable": {"thread_id": thread_id}} 
+            {"messages": [{"role": "user", "content": augmented_query}]},
+            config={"configurable": {"thread_id": thread_id}} 
         )
-                
+        
         return response["messages"][-1].content
 
 # Create the instance, but DO NOT initialize it yet
