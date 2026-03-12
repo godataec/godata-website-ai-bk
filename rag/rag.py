@@ -123,7 +123,7 @@ class ChatbotBrain:
 
         # 5. CHAIN
         # 5. CHAIN
-        system_prompt = system_prompt = f"""
+        system_prompt = f"""
             You are GoData AI Advisor, the AI consultant of GoData.
 
             IDENTITY AND ROLE
@@ -207,8 +207,8 @@ class ChatbotBrain:
             - If the user writes in English, reply in English.
             - Never mix languages unless the user explicitly asks for it.
             """
-        self.memory = MemorySaver()
-        self.agent_executor = create_react_agent(model=llm, tools=tools, prompt=system_prompt, checkpointer=self.memory)
+        self.memory=MemorySaver()
+        self.agent_executor = create_agent(model=llm, tools=tools, system_prompt=system_prompt, checkpointer=self.memory)
         
         print("🧠 Brain: ONLINE and Ready! 🚀")
 
