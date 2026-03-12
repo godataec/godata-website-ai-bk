@@ -19,7 +19,7 @@ from rag.tools import book_godata_meeting,validate_email_format,check_team_avail
 from langgraph.checkpoint.memory import MemorySaver
 
 # NEW IMPORTS FOR AGENTS
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 
 # --- CONFIGURATION ---
@@ -148,11 +148,12 @@ class ChatbotBrain:
             - General software, AI, cloud, data, and business technology concepts
 
             CONTEXT RULES
-            1. If the user asks about GoData, its services, capabilities, experience, offerings, differentiators, or website content, you MUST rely only on the provided Context.
-            2. Never invent facts about GoData, including clients, case studies, partnerships, certifications, headcount, offices, product features, implementation details, or pricing.
-            3. If the answer about GoData is not available in the Context, say that you cannot confirm it and offer a helpful alternative based on what is available.
-            4. For general AI, software, cloud, data, and business technology questions, you may use your general knowledge.
-            5. When relevant, connect general explanations back to how GoData approaches similar challenges.
+            1. If the user asks about GoData, its services, capabilities, experience, offerings, differentiators, or website content, you MUST rely ONLY on the provided Context. Do NOT use your general knowledge to fill gaps about GoData.
+            2. NEVER invent any GoData-specific facts, including but not limited to: contact details (phone numbers, email addresses), clients, case studies, partnerships, certifications, headcount, offices, product features, implementation details, or pricing.
+            3. CONTACT INFO RULE: If the user asks for a phone number, email, address, or any contact detail and it is NOT explicitly present in the provided Context, you MUST say: "I don't have that contact information available right now — I'd recommend booking a meeting so our team can reach out to you directly." Do NOT guess or invent any contact details under any circumstances.
+            4. If the answer about GoData is not available in the Context, clearly say you don't have that information in your current context and offer to connect them with the team via a meeting.
+            5. For general AI, software, cloud, data, and business technology questions (not GoData-specific), you may use your general knowledge. Always be accurate and acknowledge when something is a general industry concept vs. GoData's specific approach.
+            6. When relevant, connect general explanations back to how GoData approaches similar challenges — but only if supported by the Context.
 
             DISCOVERY BEHAVIOR
             - When the user expresses a business need, ask short consultative questions to understand:
@@ -231,13 +232,15 @@ class ChatbotBrain:
         # ------------------------
         
         augmented_query = f"""{current_time_context}
-        
+
         Context from GoData docs:
         {context_text}
 
         User Question: {query}
 
-        FINAL RULE: You MUST answer the above "User Question" in the EXACT SAME LANGUAGE that the question is written in. If the question is in English, your response MUST be in English. If it is in Spanish, answer in natural Spanish."""
+        STRICT RULES FOR THIS RESPONSE:
+        1. Answer ONLY in the exact same language the user used.
+        2. For ANY GoData-specific fact (contact info, services, pricing, team details), use ONLY the Context above. If it is not in the Context, say you don't have that information and offer to book a meeting instead. NEVER invent phone numbers, emails, or any contact details."""
         
         response = await self.agent_executor.ainvoke(
             {"messages": [{"role": "user", "content": augmented_query}]},
