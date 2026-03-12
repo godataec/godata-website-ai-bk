@@ -49,6 +49,7 @@ MAX_MESSAGE_LENGTH = 400
 
 class ChatRequest(BaseModel):
     message: str
+    thread_id: str = "default_session"
 
     @field_validator("message")
     @classmethod
@@ -66,7 +67,7 @@ async def chat_endpoint(request: ChatRequest):
     try:
         if not getattr(brain, 'agent_executor', None):
             return {"answer": "I am still waking up. Please try again in a few seconds."}
-        answer = await brain.ask(request.message)
+        answer = await brain.ask(request.message, thread_id=request.thread_id)
         return {"answer": answer}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
