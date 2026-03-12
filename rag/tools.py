@@ -140,3 +140,18 @@ def check_team_availability(date: str, time: str) -> str:
         return "Success: Juan is free at this time."
     except Exception as e:
         return f"Error checking availability: {str(e)}"
+    
+
+
+def create_knowledge_tool(retriever):
+    """
+    Factory function to build the knowledge tool dynamically
+    using the retriever passed from the main brain.
+    """
+    @tool
+    async def search_godata_knowledge(query: str) -> str:
+        """Searches the GoData website knowledge base. Use this tool BEFORE answering any questions about GoData's services, software factory, data engineering, pricing, or company details."""
+        docs = await retriever.ainvoke(query)
+        return "\n\n".join([doc.page_content for doc in docs])
+    
+    return search_godata_knowledge

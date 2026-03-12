@@ -1,129 +1,55 @@
 import os
-import nest_asyncio
-from dotenv import load_dotenv
-from urllib.parse import urljoin, urlparse
 from datetime import datetime
+from dotenv import load_dotenv
 
-# Patch asyncio just in case, though we are fixing the root cause
+# We can keep nest_asyncio just to be safe, but we don't strictly need it anymore!
+import nest_asyncio
 nest_asyncio.apply()
 load_dotenv()
 
-# IMPORTS
-from playwright.async_api import async_playwright
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
-from langchain_core.documents import Document
-from rag.tools import book_godata_meeting,validate_email_format,check_team_availability
+# --- NEW LIGHTWEIGHT IMPORTS ---
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_pinecone import PineconeVectorStore
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
-# NEW IMPORTS FOR AGENTS
+# Your existing tools
+from rag.tools import book_godata_meeting, validate_email_format, check_team_availability,create_knowledge_tool
 from langchain.agents import create_agent
-
 
 # --- CONFIGURATION ---
 os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
-TARGET_URL = os.getenv("TARGET_URL") 
 
 class ChatbotBrain:
     def __init__(self):
         self.vector_db = None
-        self.chain = None
-        # We DO NOT initialize here anymore. 
-        # We will call await brain.initialize() from main.py
-
-    async def crawl_website(self, start_url):
-        """
-        Custom Async Crawler using Playwright.
-        Scrapes the homepage and all internal links found.
-        """
-        print(f"🕷️  Async Crawler: Starting at {start_url}...")
-        visited_urls = set()
-        documents = []
-        
-        async with async_playwright() as p:
-            # Launch browser
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            page = await context.new_page()
-            
-            # 1. SCRAPE HOMEPAGE & FIND LINKS
-            try:
-                await page.goto(start_url, wait_until="networkidle")
-                
-                # Get page content as clean text (not raw HTML)
-                content = await page.inner_text("body")
-                documents.append(Document(page_content=content, metadata={"source": start_url}))
-                visited_urls.add(start_url)
-                
-                # Find all links
-                anchors = await page.query_selector_all("a")
-                for a in anchors:
-                    href = await a.get_attribute("href")
-                    if href:
-                        full_url = urljoin(start_url, href)
-                        # Filter for internal links only
-                        if urlparse(full_url).netloc == urlparse(start_url).netloc:
-                            if "#" not in full_url and full_url not in visited_urls:
-                                visited_urls.add(full_url)
-            except Exception as e:
-                print(f"⚠️ Error scraping {start_url}: {e}")
-
-            # 2. SCRAPE DISCOVERED LINKS
-            print(f"🕷️  Found {len(visited_urls)} pages. Scraping them now...")
-            
-            for url in visited_urls:
-                if url == start_url: continue # Skip homepage (already done)
-                try:
-                    print(f"   scrapping: {url}")
-                    await page.goto(url, wait_until="networkidle", timeout=10000)
-                    content = await page.inner_text("body") # Better for RAG than raw HTML
-                    if content:
-                        documents.append(Document(page_content=content, metadata={"source": url}))
-                except Exception as e:
-                    print(f"   Failed to scrape {url}: {e}")
-
-            await browser.close()
-            
-        return documents
+        self.agent_executor = None
 
     async def initialize(self):
-        print("🧠 Brain: Warming up...")
-        tools=[book_godata_meeting,validate_email_format,check_team_availability] # Add more tools here as you create them
+        print("🧠 Brain: Connecting to Pinecone Cloud...")
         
-        # 1. CRAWL (Async)
-        docs = await self.crawl_website(TARGET_URL)
-        
-        if not docs:
-            print("⚠️ Brain: No content found. Chatbot will be empty.")
-            return
-
-        print(f"🧠 Brain: Processing {len(docs)} pages into knowledge...")
-
-        # 2. SPLIT
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        splits = splitter.split_documents(docs)
-        
-        # 3. EMBED
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        
-        self.vector_db = Chroma.from_documents(
-            documents=splits, 
-            embedding=embeddings,
-            collection_name="godata_knowledge"
+        # 1. Connect to Pinecone (No scraping required!)
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        self.vector_db = PineconeVectorStore(
+            index_name="godata-knowledge",
+            embedding=embeddings
         )
         
-        # 4. LLM
+        # 2. Turn the Database into an Agentic Tool
+        retriever = self.vector_db.as_retriever(search_kwargs={"k": 4})
+        knowledge_tool = create_knowledge_tool(retriever)
+        
+
+        # 3. Assemble all tools
+        tools = [book_godata_meeting, validate_email_format, check_team_availability, knowledge_tool]
+        
         llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0
         )
-        self.retriever = self.vector_db.as_retriever(search_kwargs={"k": 6})
 
-        # 5. CHAIN
-        # 5. CHAIN
-        system_prompt = f"""
+        # 4. CHAIN
+        system_prompt = """
             You are GoData AI Advisor, the AI consultant of GoData.
 
             IDENTITY AND ROLE
@@ -139,52 +65,14 @@ class ChatbotBrain:
             4. Recommend relevant GoData services when appropriate.
             5. Move high-intent visitors toward a discovery session or expert consultation.
 
-            SCOPE
-            You can help with:
-            - GoData services, capabilities, approaches, and differentiators
-            - AI strategy, AI-native transformation, AI assistants, AI agents
-            - Enterprise knowledge systems, RAG, copilots, workflow automation
-            - Data platforms, analytics, data products, modern architectures
-            - General software, AI, cloud, data, and business technology concepts
-
-            CONTEXT RULES
-            1. If the user asks about GoData, its services, capabilities, experience, offerings, differentiators, or website content, you MUST rely ONLY on the provided Context. Do NOT use your general knowledge to fill gaps about GoData.
-            2. NEVER invent any GoData-specific facts, including but not limited to: contact details (phone numbers, email addresses), clients, case studies, partnerships, certifications, headcount, offices, product features, implementation details, or pricing.
-            3. CONTACT INFO RULE: If the user asks for a phone number, email, address, or any contact detail and it is NOT explicitly present in the provided Context, you MUST say: "I don't have that contact information available right now — I'd recommend booking a meeting so our team can reach out to you directly." Do NOT guess or invent any contact details under any circumstances.
-            4. If the answer about GoData is not available in the Context, clearly say you don't have that information in your current context and offer to connect them with the team via a meeting.
-            5. For general AI, software, cloud, data, and business technology questions (not GoData-specific), you may use your general knowledge. Always be accurate and acknowledge when something is a general industry concept vs. GoData's specific approach.
-            6. When relevant, connect general explanations back to how GoData approaches similar challenges — but only if supported by the Context.
-
-            DISCOVERY BEHAVIOR
-            - When the user expresses a business need, ask short consultative questions to understand:
-            - industry
-            - business goal
-            - current challenge
-            - data/technology maturity
-            - desired outcome
-            - Do not ask too many questions at once.
-            - Prefer a natural discovery flow over a long questionnaire.
-
-            RESPONSE STYLE
-            - Always be professional, concise, consultative, and natural.
-            - Default to short, high-value answers suitable for a website hero chat.
-            - Prefer 1 to 3 short paragraphs or a compact structured answer.
-            - Avoid long explanations unless the user asks for more depth.
-            - Do not repeatedly introduce yourself.
-            - Do not sound like generic customer support.
-            - Be confident, but never fabricate facts.
-
-            CONSULTATIVE SALES BEHAVIOR
-            - When appropriate, suggest relevant next steps such as:
-            - AI opportunity assessment
-            - discovery session
-            - architecture discussion
-            - expert consultation
-            - Always provide useful insight before proposing a meeting.
-            - If the user shows buying intent, consulting intent, or asks to speak with someone, guide them toward booking.
+            CONTEXT RULES (CRITICAL)
+            1. Whenever the user asks about GoData, its services, capabilities, or offerings, you MUST use the 'search_godata_knowledge' tool to find the answer.
+            2. NEVER invent any GoData-specific facts, contact details (phone numbers, email addresses), clients, or pricing.
+            3. CONTACT INFO RULE: If the user asks for contact info and it is NOT found using your knowledge tool, say: "I don't have that contact information available right now — I'd recommend booking a meeting so our team can reach out to you directly."
+            4. For general AI or tech concepts, you may use your general knowledge.
 
             BOOKING LOGIC
-            If the user wants to book a meeting, request a consultation, talk to an expert, or schedule a discovery session, you MUST gather:
+            If the user wants to book a meeting, you MUST gather:
             - Name
             - Email
             - Company Name
@@ -193,61 +81,35 @@ class ChatbotBrain:
 
             BOOKING TOOL RULES
             1. Before booking, use 'validate_email_format' to validate the email.
-            2. If validation fails, ask the user for a corrected email.
-            3. Once you have a valid date and time, use 'check_team_availability' before booking.
-            4. If there is a conflict, ask the user for another time.
-            5. Only call 'book_godata_meeting' when all required fields are collected and availability is confirmed.
-            6. Never guess missing booking information.
-
-            OUT-OF-SCOPE RULE
-            - If the question is completely unrelated to GoData, AI, software, business technology, data, or automation, politely redirect by saying you are focused on helping with AI, data, software, and GoData-related topics.
+            2. Once you have a valid date and time, use 'check_team_availability' before booking.
+            3. Only call 'book_godata_meeting' when all required fields are collected and availability is confirmed.
+            4. Never guess missing booking information.
 
             LANGUAGE RULE
             - You MUST always reply in the exact same language the user uses.
             - If the user writes in Spanish, reply in natural Spanish.
-            - If the user writes in English, reply in English.
-            - Never mix languages unless the user explicitly asks for it.
-            """
-        self.memory=MemorySaver()
+        """
+        
+        self.memory = MemorySaver()
         self.agent_executor = create_agent(model=llm, tools=tools, system_prompt=system_prompt, checkpointer=self.memory)
         
         print("🧠 Brain: ONLINE and Ready! 🚀")
-
 
     async def ask(self, query: str, thread_id: str = "default_session"):
         if not getattr(self, 'agent_executor', None):
             return "I am still waking up. Please try again in 10 seconds."
             
         now = datetime.now()
-        current_time_context = f"Current Date and Time: {now.strftime('%A, %B %d, %Y %H:%M')}"
+        time_context = f"[System Time: {now.strftime('%A, %B %d, %Y %H:%M')}]\n\n"
         
-        # --- THE TOKEN SAVER ---
-        # Only skip RAG for single-word greetings/acks (hi, thanks, ok, si, no, etc.)
-        if len(query.split()) <= 1:
-            context_text = "No specific website context needed for this short message."
-        else:
-            # Only run the heavy RAG search if they actually ask a real question
-            docs = await self.retriever.ainvoke(query)
-            context_text = "\n\n".join([doc.page_content for doc in docs])
-        # ------------------------
-        
-        augmented_query = f"""{current_time_context}
-
-        Context from GoData docs:
-        {context_text}
-
-        User Question: {query}
-
-        STRICT RULES FOR THIS RESPONSE:
-        1. Answer ONLY in the exact same language the user used.
-        2. For ANY GoData-specific fact (contact info, services, pricing, team details), use ONLY the Context above. If it is not in the Context, say you don't have that information and offer to book a meeting instead. NEVER invent phone numbers, emails, or any contact details."""
-        
+        # Look how clean this is! No more massive prompt injections. 
+        # The agent relies entirely on its memory and tools now.
         response = await self.agent_executor.ainvoke(
-            {"messages": [{"role": "user", "content": augmented_query}]},
+            {"messages": [{"role": "user", "content": time_context + query}]},
             config={"configurable": {"thread_id": thread_id}} 
         )
         
         return response["messages"][-1].content
 
-# Create the instance, but DO NOT initialize it yet
+# Create the instance
 brain = ChatbotBrain()
