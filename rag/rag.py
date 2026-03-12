@@ -76,8 +76,8 @@ class ChatbotBrain:
             - Name
             - Email
             - Company Name
-            - Preferred Date (convert to YYYY-MM-DD format)
-            - Preferred Time (convert to HH:MM 24-hour format, Ecuador time UTC-5)
+            - Preferred Date (convert to YYYY-MM-DD format, do not tell the user to do this, you convert it internally)
+            - Preferred Time (convert to HH:MM 24-hour format, Ecuador time UTC-5, do not tell the user to do this, you convert it internally)
 
             BOOKING TOOL RULES
             1. Before booking, use 'validate_email_format' to validate the email.
